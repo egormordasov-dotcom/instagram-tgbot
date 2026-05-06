@@ -1,6 +1,6 @@
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router()
 
@@ -8,10 +8,10 @@ ALLOWED_USERS = None  # Заполняется из env в main.py
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📱 Аккаунты",   callback_data="menu_accounts")],
-        [InlineKeyboardButton(text="🏷 Артикулы",   callback_data="menu_articles")],
-        [InlineKeyboardButton(text="📊 Отчёты",     callback_data="menu_reports")],
-        [InlineKeyboardButton(text="🔔 Авто-отчёты",callback_data="menu_scheduled")],
+        [InlineKeyboardButton(text="📱 Аккаунты",    callback_data="menu_accounts")],
+        [InlineKeyboardButton(text="🏷 Артикулы",    callback_data="menu_articles")],
+        [InlineKeyboardButton(text="📊 Отчёты",      callback_data="menu_reports")],
+        [InlineKeyboardButton(text="🔔 Авто-отчёты", callback_data="menu_scheduled")],
     ])
 
 @router.message(CommandStart())
@@ -31,6 +31,13 @@ async def cmd_start(message: Message, pool):
     await message.answer(
         f"👋 Привет, {message.from_user.first_name}!\n\n"
         "Это бот аналитики Instagram — отслеживает просмотры по артикулам.\n\n"
+        "Выберите раздел:",
+        reply_markup=main_menu()
+    )
+
+@router.callback_query(F.data == "menu_main")
+async def menu_main(call: CallbackQuery):
+    await call.message.edit_text(
         "Выберите раздел:",
         reply_markup=main_menu()
     )
