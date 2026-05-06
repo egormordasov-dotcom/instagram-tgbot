@@ -108,11 +108,32 @@ async def collect_account(username: str) -> tuple[str | None, list]:
         reels = await fetch_reels(session, user_id)
         return user_id, reels
 
+def article_variants(article: str) -> list[str]:
+    """Генерирует все варианты написания артикула для поиска."""
+    art = article.lstrip("#").upper()
+    variants = [art]                    # WW408865
+    variants.append("#" + art)          # #WW408865
+    variants.append(art.lower())        # ww408865
+    variants.append("#" + art.lower())  # #ww408865
+    # www вместо ww (частая опечатка)
+    if art.startswith("WW") and not art.startswith("WWW"):
+        www = "WWW" + art[2:]
+        variants.append(www)
+        variants.append("#" + www)
+        variants.append(www.lower())
+        variants.append("#" + www.lower())
+    return variants
+
 def find_articles_in_text(text: str, articles: list[str]) -> list[str]:
-    """Ищет артикулы в тексте с защитой от ложных срабатываний."""
+    """Ищет артикулы в тексте — все варианты написания."""
     found = []
     for article in articles:
-        pattern = r"(?<![A-Za-z0-9А-Яа-яЁё])" + re.escape(article) + r"(?![A-Za-z0-9А-Яа-яЁё])"
-        if re.search(pattern, text, re.IGNORECASE):
+        matched = False
+        for variant in article_variants(article):
+            pattern = r"(?<![A-Za-z0-9А-Яа-яЁё])" + re.escape(variant) + r"(?![A-Za-z0-9А-Яа-яЁё])"
+            if re.search(pattern, text, re.IGNORECASE):
+                matched = True
+                break
+        if matched:
             found.append(article)
     return found
