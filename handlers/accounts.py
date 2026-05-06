@@ -10,10 +10,11 @@ class AccountStates(StatesGroup):
 
 def accounts_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="acc_add")],
-        [InlineKeyboardButton(text="📋 Мои аккаунты",     callback_data="acc_list")],
-        [InlineKeyboardButton(text="🔄 Синхронизировать", callback_data="acc_sync")],
-        [InlineKeyboardButton(text="◀️ Назад",            callback_data="menu_main")],
+        [InlineKeyboardButton(text="➕ Добавить аккаунт",   callback_data="acc_add")],
+        [InlineKeyboardButton(text="📋 Мои аккаунты",       callback_data="acc_list")],
+        [InlineKeyboardButton(text="🔄 Синхронизировать",   callback_data="acc_sync")],
+        [InlineKeyboardButton(text="📸 Быстрый снимок",     callback_data="acc_snapshot")],
+        [InlineKeyboardButton(text="◀️ Назад",              callback_data="menu_main")],
     ])
 
 @router.callback_query(F.data == "menu_accounts")
@@ -117,3 +118,59 @@ async def acc_sync(call: CallbackQuery, pool):
                 logging.getLogger(__name__).error(f"Sync @{acc['username']}: {e}")
 
     asyncio.create_task(run_sync())
+
+@router.callback_query(F.data == "acc_snapshot")
+async def acc_snapshot(call: CallbackQuery, pool):
+    """Делает серию быстрых снимков просмотров — для накопления истории."""
+    user_id = call.from_user.id
+
+    async with pool.acquire() as conn:
+        accounts = await conn.fetch(
+            "SELECT id, username FROM accounts WHERE user_id=$1 AND is_active=TRUE AND platform='instagram'",
+            user_id
+        )
+
+    if not accounts:
+        await call.message.edit_text("Нет активных аккаунтов.", reply_markup=accounts_menu())
+        return
+
+    await call.message.edit_text(
+        "📸 <b>Быстрый снимок запущен</b>\n\n"
+        "Бот сделает 5 снимков просмотров с паузой 10 минут каждый.\n"
+        "Это создаст базу для отслеживания прироста.\n\n"
+        "Процесс идёт в фоне — продолжайте пользоваться ботом.",
+        parse_mode="HTML",
+        reply_markup=accounts_menu()
+    )
+
+    import asyncio
+    from scheduler import sync_account
+
+    async def run_snapshots():
+        SNAPSHOTS = 5
+        PAUSE_MINUTES = 10
+
+        for i in range(SNAPSHOTS):
+            for acc in accounts:
+                try:
+                    await sync_account(pool, dict(acc))
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Snapshot {i+1} @{acc['username']}: {e}")
+
+            if i < SNAPSHOTS - 1:
+                await asyncio.sleep(PAUSE_MINUTES * 60)
+
+        # Уведомляем что всё готово
+        try:
+            await call.bot.send_message(
+                user_id,
+                f"✅ <b>Снимки готовы!</b>\n\n"
+                f"Сделано {SNAPSHOTS} снимков за {SNAPSHOTS * PAUSE_MINUTES} минут.\n"
+                f"Теперь в отчёте 'Прирост' будут данные за этот период.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    asyncio.create_task(run_snapshots())
