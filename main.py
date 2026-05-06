@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from aiohttp import web
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher
@@ -16,8 +17,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN    = os.environ["BOT_TOKEN"]
+BOT_TOKEN         = os.environ["BOT_TOKEN"]
 ALLOWED_USERS_STR = os.environ.get("ALLOWED_USERS", "")
+PORT              = int(os.environ.get("PORT", 10000))
+
+async def health(request):
+    return web.Response(text="OK")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Веб-сервер запущен на порту {PORT}")
 
 async def main():
     bot  = Bot(token=BOT_TOKEN)
@@ -60,9 +74,12 @@ async def main():
     scheduler.start()
     logger.info("Планировщик запущен")
 
-    # Запуск бота
+    # Запуск бота + веб-сервер параллельно
     logger.info("Бот запущен")
-    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+    await asyncio.gather(
+        start_web(),
+        dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
