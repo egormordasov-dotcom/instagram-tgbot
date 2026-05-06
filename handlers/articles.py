@@ -1,141 +1,148 @@
+import io
+import re
+import openpyxl
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Document
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import io
 
 router = Router()
 
 class ArticleStates(StatesGroup):
-    waiting_article = State()
+    waiting_file = State()
 
 def articles_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить артикул",      callback_data="art_add")],
-        [InlineKeyboardButton(text="📎 Загрузить шаблоном",    callback_data="art_template")],
-        [InlineKeyboardButton(text="📋 Список артикулов",      callback_data="art_list")],
-        [InlineKeyboardButton(text="🗑 Удалить артикул",       callback_data="art_delete")],
-        [InlineKeyboardButton(text="◀️ Назад",                callback_data="menu_main")],
+        [InlineKeyboardButton(text="➕ Добавить артикулы", callback_data="art_add")],
+        [InlineKeyboardButton(text="📋 Список артикулов",  callback_data="art_list")],
+        [InlineKeyboardButton(text="🗑 Удалить все",       callback_data="art_delete_all")],
+        [InlineKeyboardButton(text="◀️ Назад",            callback_data="menu_main")],
     ])
 
 @router.callback_query(F.data == "menu_articles")
 async def menu_articles(call: CallbackQuery):
     await call.message.edit_text("🏷 Управление артикулами:", reply_markup=articles_menu())
 
+# ── Шаг 1: выбираем аккаунт ──────────────────────────────────
 @router.callback_query(F.data == "art_add")
-async def art_add(call: CallbackQuery, state: FSMContext):
-    await state.set_state(ArticleStates.waiting_article)
+async def art_add(call: CallbackQuery, pool):
+    user_id = call.from_user.id
+
+    async with pool.acquire() as conn:
+        accounts = await conn.fetch(
+            "SELECT id, username FROM accounts WHERE user_id=$1 AND is_active=TRUE AND platform='instagram' ORDER BY username",
+            user_id
+        )
+
+    if not accounts:
+        await call.message.edit_text(
+            "❌ Сначала добавьте хотя бы один аккаунт Instagram.\n\n"
+            "Перейдите в раздел 📱 Аккаунты.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📱 Аккаунты", callback_data="menu_accounts")],
+                [InlineKeyboardButton(text="◀️ Назад",   callback_data="menu_articles")],
+            ])
+        )
+        return
+
+    buttons = []
+    for acc in accounts:
+        buttons.append([InlineKeyboardButton(
+            text=f"@{acc['username']}",
+            callback_data=f"art_acc_{acc['id']}"
+        )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_articles")])
+
     await call.message.edit_text(
-        "Введите артикул (или несколько через запятую):\n"
-        "<i>Пример: 279359950, WW385229</i>\n\n"
-        "Бот будет искать этот артикул в описаниях Reels.",
+        "Выберите аккаунт для которого добавляете артикулы:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+
+# ── Шаг 2: просим загрузить файл ─────────────────────────────
+@router.callback_query(F.data.startswith("art_acc_"))
+async def art_acc_selected(call: CallbackQuery, state: FSMContext, pool):
+    account_id = int(call.data.replace("art_acc_", ""))
+
+    async with pool.acquire() as conn:
+        acc = await conn.fetchrow("SELECT username FROM accounts WHERE id=$1", account_id)
+
+    if not acc:
+        await call.message.edit_text("❌ Аккаунт не найден.")
+        return
+
+    await state.set_state(ArticleStates.waiting_file)
+    await state.update_data(account_id=account_id, username=acc['username'])
+
+    await call.message.edit_text(
+        f"✅ Выбран аккаунт: <b>@{acc['username']}</b>\n\n"
+        "Отправьте Excel файл (.xlsx) со списком артикулов.\n\n"
+        "📋 <b>Формат файла:</b>\n"
+        "• Артикулы в колонке <b>A</b> начиная с ячейки <b>A1</b>\n"
+        "• Один артикул на строку\n"
+        "• Пример: <code>WW408865</code> или <code>279359950</code>\n"
+        "• Решётку # писать не обязательно — бот учтёт оба варианта",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="menu_articles")]
         ])
     )
 
-@router.message(ArticleStates.waiting_article)
-async def art_save(message: Message, state: FSMContext, pool):
-    user_id = message.from_user.id
-    raw = message.text.strip()
-    articles = [a.strip().lstrip("#") for a in raw.replace("\n", ",").split(",") if a.strip()]
-
-    added = []
-    skipped = []
-    async with pool.acquire() as conn:
-        for art in articles:
-            try:
-                await conn.execute(
-                    "INSERT INTO articles (user_id, article) VALUES ($1,$2)",
-                    user_id, art
-                )
-                added.append(art)
-            except Exception:
-                skipped.append(art)
-
-    await state.clear()
-    text = ""
-    if added:   text += f"✅ Добавлено: {', '.join(added)}\n"
-    if skipped: text += f"⚠️ Уже есть: {', '.join(skipped)}\n"
-    await message.answer(text or "Ничего не добавлено.", reply_markup=articles_menu())
-
-@router.callback_query(F.data == "art_template")
-async def art_template(call: CallbackQuery):
-    await call.answer()
-    text = "article\nWW408865\nWW408866\n279359950\n180893337\n"
-    file = io.BytesIO(text.encode("utf-8"))
-    file.name = "articles_template.csv"
-    await call.message.answer_document(
-        document=file,
-        caption=(
-            "📎 <b>Шаблон для загрузки артикулов</b>\n\n"
-            "Два варианта:\n"
-            "1️⃣ <b>CSV/TXT</b> — один артикул на строку (этот файл)\n"
-            "2️⃣ <b>Excel (.xlsx)</b> — артикулы в колонке E\n\n"
-            "Заполните и отправьте файл в чат."
-        ),
-        parse_mode="HTML",
-        reply_markup=articles_menu()
-    )
-
-@router.message(F.document)
-async def art_upload_file(message: Message, pool):
-    """Обрабатывает загруженный файл с артикулами — CSV, TXT или Excel."""
-    import re
+# ── Шаг 3: принимаем файл ────────────────────────────────────
+@router.message(ArticleStates.waiting_file, F.document)
+async def art_receive_file(message: Message, state: FSMContext, pool):
     doc = message.document
-    fname = doc.file_name.lower()
 
-    user_id = message.from_user.id
-    file    = await message.bot.get_file(doc.file_id)
-    content = await message.bot.download_file(file.file_path)
-    data    = content.read()
-
-    articles = []
-
-    if fname.endswith((".xlsx", ".xls")):
-        # Excel формат — читаем колонку E (индекс 4)
-        import io
-        import openpyxl
-        try:
-            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(min_row=1, values_only=True):
-                if len(row) >= 5:
-                    val = row[4]  # колонка E
-                    if val:
-                        art = str(val).strip().lstrip("#").upper()
-                        if re.match(r"^WW\w+$", art) or re.match(r"^\d{6,}$", art):
-                            articles.append(art)
-        except Exception as e:
-            await message.answer(f"❌ Ошибка чтения Excel: {e}")
-            return
-
-    elif fname.endswith((".csv", ".txt")):
-        # CSV/TXT — по одному артикулу на строку
-        text = data.decode("utf-8", errors="ignore")
-        for line in text.splitlines():
-            line = line.strip().lstrip("#")
-            if line and line.lower() != "article" and not line.startswith("//"):
-                art = line.split(",")[0].strip().lstrip("#").upper()
-                if art:
-                    articles.append(art)
-    else:
+    if not doc.file_name.lower().endswith((".xlsx", ".xls", ".csv", ".txt")):
         await message.answer(
-            "⚠️ Поддерживаются форматы: .xlsx, .csv, .txt\n\n"
-            "Отправьте файл в одном из этих форматов."
+            "⚠️ Пожалуйста отправьте файл в формате .xlsx, .csv или .txt"
         )
         return
+
+    data       = await state.get_data()
+    account_id = data['account_id']
+    username   = data['username']
+    user_id    = message.from_user.id
+
+    # Скачиваем файл
+    file    = await message.bot.get_file(doc.file_id)
+    content = await message.bot.download_file(file.file_path)
+    raw     = content.read()
+
+    # Читаем артикулы
+    articles = []
+    fname = doc.file_name.lower()
+
+    if fname.endswith((".xlsx", ".xls")):
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=1, min_col=1, max_col=1, values_only=True):
+                val = row[0]
+                if val is not None:
+                    art = str(val).strip().lstrip("#").upper()
+                    if art:
+                        articles.append(art)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка чтения Excel: {e}")
+            await state.clear()
+            return
+    else:
+        text = raw.decode("utf-8", errors="ignore")
+        for line in text.splitlines():
+            art = line.strip().lstrip("#").upper()
+            if art and art.lower() != "article":
+                articles.append(art.split(",")[0].strip())
 
     if not articles:
         await message.answer(
-            "❌ Артикулы не найдены в файле.\n\n"
-            "Для Excel: артикулы должны быть в колонке <b>E</b>.\n"
-            "Формат: <code>WW408865</code> или числовой артикул.",
-            parse_mode="HTML"
+            "❌ Артикулы не найдены.\n\n"
+            "Убедитесь что артикулы в колонке A начиная с A1.",
+            reply_markup=articles_menu()
         )
+        await state.clear()
         return
 
+    # Сохраняем в БД — привязываем к пользователю
     added = skipped = 0
     async with pool.acquire() as conn:
         for art in articles:
@@ -148,13 +155,30 @@ async def art_upload_file(message: Message, pool):
             except Exception:
                 skipped += 1
 
+    await state.clear()
+
+    preview = ", ".join(articles[:5])
+    if len(articles) > 5:
+        preview += f" ...+{len(articles)-5}"
+
     await message.answer(
-        f"✅ Загружено артикулов: {added}\n"
-        f"⚠️ Уже существовало: {skipped}\n\n"
-        f"Примеры: {', '.join(articles[:3])}{'...' if len(articles) > 3 else ''}",
+        f"✅ Артикулы для <b>@{username}</b> загружены!\n\n"
+        f"• Добавлено: <b>{added}</b>\n"
+        f"• Уже было: <b>{skipped}</b>\n\n"
+        f"Примеры: <code>{preview}</code>",
+        parse_mode="HTML",
         reply_markup=articles_menu()
     )
 
+# ── Если в состоянии ожидания файла прислали текст ───────────
+@router.message(ArticleStates.waiting_file)
+async def art_waiting_wrong(message: Message):
+    await message.answer(
+        "⚠️ Пожалуйста отправьте файл .xlsx или .csv\n\n"
+        "Или нажмите /start чтобы вернуться в меню."
+    )
+
+# ── Список артикулов ─────────────────────────────────────────
 @router.callback_query(F.data == "art_list")
 async def art_list(call: CallbackQuery, pool):
     user_id = call.from_user.id
@@ -173,7 +197,29 @@ async def art_list(call: CallbackQuery, pool):
     else:
         lines = [f"🏷 <b>Ваши артикулы</b> ({len(arts)} шт.):\n"]
         for a in arts:
-            lines.append(f"• {a['article']} — {a['videos']} видео")
+            lines.append(f"• <code>{a['article']}</code> — {a['videos']} видео")
         text = "\n".join(lines)
 
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=articles_menu())
+
+# ── Удалить все ───────────────────────────────────────────────
+@router.callback_query(F.data == "art_delete_all")
+async def art_delete_all(call: CallbackQuery):
+    await call.message.edit_text(
+        "⚠️ Удалить все артикулы?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data="art_delete_confirm")],
+            [InlineKeyboardButton(text="◀️ Отмена",     callback_data="menu_articles")],
+        ])
+    )
+
+@router.callback_query(F.data == "art_delete_confirm")
+async def art_delete_confirm(call: CallbackQuery, pool):
+    user_id = call.from_user.id
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM articles WHERE user_id=$1", user_id)
+    deleted = result.split()[-1]
+    await call.message.edit_text(
+        f"✅ Удалено артикулов: {deleted}",
+        reply_markup=articles_menu()
+    )
