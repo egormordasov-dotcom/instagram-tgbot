@@ -62,20 +62,21 @@ async def art_save(message: Message, state: FSMContext, pool):
 
 @router.callback_query(F.data == "art_template")
 async def art_template(call: CallbackQuery):
-    # Отправляем шаблон CSV
-    text = "article\n279359950\nWW385229\n180893337\n"
+    await call.answer()
+    text = "article\nWW408865\nWW408866\n279359950\n180893337\n"
     file = io.BytesIO(text.encode("utf-8"))
     file.name = "articles_template.csv"
-
     await call.message.answer_document(
         document=file,
         caption=(
-            "📎 Шаблон для загрузки артикулов.\n\n"
-            "Заполните колонку <b>article</b> своими артикулами "
-            "(без # и без пробелов) и отправьте файл в чат.\n\n"
-            "Формат: CSV или TXT, по одному артикулу на строку."
+            "📎 <b>Шаблон для загрузки артикулов</b>\n\n"
+            "Два варианта:\n"
+            "1️⃣ <b>CSV/TXT</b> — один артикул на строку (этот файл)\n"
+            "2️⃣ <b>Excel (.xlsx)</b> — артикулы в колонке E\n\n"
+            "Заполните и отправьте файл в чат."
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=articles_menu()
     )
 
 @router.message(F.document)
