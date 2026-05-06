@@ -59,14 +59,6 @@ async def main():
     dp.include_router(reports.router)
     dp.include_router(scheduled.router)
 
-    # Навигация — главное меню
-    @dp.callback_query(F.data == "menu_main")
-    async def menu_main(call: CallbackQuery):
-        await call.message.edit_text(
-            "Выберите раздел:",
-            reply_markup=start.main_menu()
-        )
-
     # Планировщик
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
     scheduler.add_job(sync_all,                 "interval", hours=6,   args=[pool])
