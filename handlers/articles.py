@@ -80,24 +80,59 @@ async def art_template(call: CallbackQuery):
 
 @router.message(F.document)
 async def art_upload_file(message: Message, pool):
-    """Обрабатывает загруженный файл с артикулами."""
+    """Обрабатывает загруженный файл с артикулами — CSV, TXT или Excel."""
+    import re
     doc = message.document
-    if not doc.file_name.endswith((".csv", ".txt")):
-        return
+    fname = doc.file_name.lower()
 
     user_id = message.from_user.id
-    file = await message.bot.get_file(doc.file_id)
+    file    = await message.bot.get_file(doc.file_id)
     content = await message.bot.download_file(file.file_path)
-    text = content.read().decode("utf-8", errors="ignore")
+    data    = content.read()
 
     articles = []
-    for line in text.splitlines():
-        line = line.strip().lstrip("#")
-        if line and line.lower() != "article" and not line.startswith("//"):
-            articles.append(line.split(",")[0].strip().lstrip("#"))
+
+    if fname.endswith((".xlsx", ".xls")):
+        # Excel формат — читаем колонку E (индекс 4)
+        import io
+        import openpyxl
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=1, values_only=True):
+                if len(row) >= 5:
+                    val = row[4]  # колонка E
+                    if val:
+                        art = str(val).strip().lstrip("#").upper()
+                        if re.match(r"^WW\w+$", art) or re.match(r"^\d{6,}$", art):
+                            articles.append(art)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка чтения Excel: {e}")
+            return
+
+    elif fname.endswith((".csv", ".txt")):
+        # CSV/TXT — по одному артикулу на строку
+        text = data.decode("utf-8", errors="ignore")
+        for line in text.splitlines():
+            line = line.strip().lstrip("#")
+            if line and line.lower() != "article" and not line.startswith("//"):
+                art = line.split(",")[0].strip().lstrip("#").upper()
+                if art:
+                    articles.append(art)
+    else:
+        await message.answer(
+            "⚠️ Поддерживаются форматы: .xlsx, .csv, .txt\n\n"
+            "Отправьте файл в одном из этих форматов."
+        )
+        return
 
     if not articles:
-        await message.answer("❌ Артикулы не найдены в файле.")
+        await message.answer(
+            "❌ Артикулы не найдены в файле.\n\n"
+            "Для Excel: артикулы должны быть в колонке <b>E</b>.\n"
+            "Формат: <code>WW408865</code> или числовой артикул.",
+            parse_mode="HTML"
+        )
         return
 
     added = skipped = 0
@@ -114,7 +149,8 @@ async def art_upload_file(message: Message, pool):
 
     await message.answer(
         f"✅ Загружено артикулов: {added}\n"
-        f"⚠️ Уже существовало: {skipped}",
+        f"⚠️ Уже существовало: {skipped}\n\n"
+        f"Примеры: {', '.join(articles[:3])}{'...' if len(articles) > 3 else ''}",
         reply_markup=articles_menu()
     )
 
