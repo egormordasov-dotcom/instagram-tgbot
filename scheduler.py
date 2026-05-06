@@ -4,16 +4,17 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-async def sync_account(pool, account: dict):
+async def sync_account(pool, account: dict, agent_idx: int = 0):
     """Синхронизирует один аккаунт: обновляет видео, просмотры, матчи артикулов."""
     from instagram import collect_account, find_articles_in_text
+    import asyncio
 
     username   = account["username"]
     account_id = account["id"]
     logger.info(f"Синхронизируем @{username}...")
 
     try:
-        ig_user_id, reels = await collect_account(username)
+        ig_user_id, reels = await collect_account(username, agent_idx)
         if not reels:
             logger.warning(f"@{username}: Reels не получены")
             return
@@ -81,9 +82,10 @@ async def sync_all(pool):
         )
 
     logger.info(f"Запуск синхронизации: {len(accounts)} аккаунтов")
-    for account in accounts:
-        await sync_account(pool, dict(account))
-        await asyncio.sleep(2)
+    for idx, account in enumerate(accounts):
+        await sync_account(pool, dict(account), agent_idx=idx)
+        # Пауза между аккаунтами чтобы не словить rate limit
+        await asyncio.sleep(15)
 
 async def send_scheduled_reports(pool, bot):
     """Отправляет запланированные отчёты."""

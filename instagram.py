@@ -8,9 +8,16 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-BASE_URL   = "https://i.instagram.com"
-APP_ID     = "936619743392459"
+BASE_URL     = "https://i.instagram.com"
+APP_ID       = "936619743392459"
 COOKIES_FILE = "cookies.json"
+
+# User-Agent ротация — имитируем разные устройства
+USER_AGENTS = [
+    "Instagram 269.0.0.18.75 Android (26/8.0.0; 480dpi; 1080x1920; OnePlus; ONEPLUS A3003; OnePlus3; qcom; en_US; 314665256)",
+    "Instagram 155.0.0.37.107 Android (28/9.0; 420dpi; 1080x2220; samsung; SM-G965F; star2ltexx; samsungexynos9810; en_US; 239490550)",
+    "Instagram 185.0.0.31.107 Android (29/10; 560dpi; 1440x2960; samsung; SM-G975F; beyond2; exynos9820; en_US; 285890493)",
+]
 
 def load_cookies() -> dict:
     path = os.environ.get("COOKIES_FILE", COOKIES_FILE)
@@ -21,29 +28,46 @@ def load_cookies() -> dict:
     cookies = data if isinstance(data, list) else data.get("cookies", [])
     return {c["name"]: c["value"] for c in cookies if "name" in c and "value" in c}
 
-def make_headers(cookies: dict) -> dict:
+def make_headers(cookies: dict, agent_idx: int = 0) -> dict:
+    import random
     csrf = cookies.get("csrftoken", "")
+    ua   = USER_AGENTS[agent_idx % len(USER_AGENTS)]
     return {
-        "User-Agent":       "Instagram 269.0.0.18.75 Android",
-        "X-IG-App-ID":      APP_ID,
-        "X-CSRFToken":      csrf,
-        "Accept-Language":  "ru-RU,ru;q=0.9",
-        "Accept":           "*/*",
-        "Connection":       "keep-alive",
+        "User-Agent":          ua,
+        "X-IG-App-ID":         APP_ID,
+        "X-CSRFToken":         csrf,
+        "Accept-Language":     "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept":              "*/*",
+        "Connection":          "keep-alive",
+        "X-IG-Bandwidth-Speed-KBPS": str(random.randint(1000, 5000)),
+        "X-IG-Bandwidth-TotalBytes-B": str(random.randint(100000, 900000)),
+        "X-Pigeon-Rawclienttime": str(random.randint(1000000, 9999999)),
     }
 
 async def get_user_id(session: aiohttp.ClientSession, username: str) -> str | None:
-    url = f"{BASE_URL}/api/v1/users/web_profile_info/?username={username}"
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            if resp.status != 200:
-                logger.warning(f"get_user_id {username}: статус {resp.status}")
-                return None
-            data = await resp.json()
-            return data.get("data", {}).get("user", {}).get("id")
-    except Exception as e:
-        logger.error(f"get_user_id {username}: {e}")
-        return None
+    # Пробуем разные эндпоинты
+    urls = [
+        f"{BASE_URL}/api/v1/users/web_profile_info/?username={username}",
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
+    ]
+    for url in urls:
+        try:
+            await asyncio.sleep(2)  # пауза между запросами
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status == 429:
+                    logger.warning(f"get_user_id {username}: статус 429 (rate limit), ждём 30с")
+                    await asyncio.sleep(30)
+                    continue
+                if resp.status != 200:
+                    logger.warning(f"get_user_id {username}: статус {resp.status}")
+                    continue
+                data = await resp.json()
+                uid = data.get("data", {}).get("user", {}).get("id")
+                if uid:
+                    return uid
+        except Exception as e:
+            logger.error(f"get_user_id {username}: {e}")
+    return None
 
 async def fetch_reels(session: aiohttp.ClientSession, user_id: str, max_pages: int = 100):
     """Получает все Reels аккаунта постранично."""
@@ -96,10 +120,10 @@ async def fetch_reels(session: aiohttp.ClientSession, user_id: str, max_pages: i
 
     return reels
 
-async def collect_account(username: str) -> tuple[str | None, list]:
+async def collect_account(username: str, agent_idx: int = 0) -> tuple[str | None, list]:
     """Собирает user_id и все Reels для аккаунта."""
     cookies = load_cookies()
-    headers = make_headers(cookies)
+    headers = make_headers(cookies, agent_idx)
 
     async with aiohttp.ClientSession(cookies=cookies, headers=headers) as session:
         user_id = await get_user_id(session, username)
