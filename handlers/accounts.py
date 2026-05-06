@@ -85,7 +85,6 @@ async def acc_list(call: CallbackQuery, pool):
 @router.callback_query(F.data == "acc_sync")
 async def acc_sync(call: CallbackQuery, pool):
     user_id = call.from_user.id
-    await call.message.edit_text("⏳ Запускаем синхронизацию...")
 
     async with pool.acquire() as conn:
         accounts = await conn.fetch(
@@ -97,20 +96,24 @@ async def acc_sync(call: CallbackQuery, pool):
         await call.message.edit_text("Нет активных аккаунтов.", reply_markup=accounts_menu())
         return
 
-    from scheduler import sync_account
-    import asyncio
-
-    results = []
-    for acc in accounts:
-        await call.message.edit_text(f"⏳ Синхронизируем @{acc['username']}...")
-        try:
-            await sync_account(pool, dict(acc))
-            results.append(f"✅ @{acc['username']}")
-        except Exception as e:
-            results.append(f"❌ @{acc['username']}: {e}")
-        await asyncio.sleep(1)
-
+    names = ", ".join(f"@{a['username']}" for a in accounts)
     await call.message.edit_text(
-        "Синхронизация завершена:\n" + "\n".join(results),
+        f"⏳ Синхронизация запущена в фоне для: {names}\n\n"
+        "Данные появятся через несколько минут.\n"
+        "Можете продолжать пользоваться ботом.",
         reply_markup=accounts_menu()
     )
+
+    # Запускаем в фоне — не блокирует бота
+    import asyncio
+    from scheduler import sync_account
+
+    async def run_sync():
+        for acc in accounts:
+            try:
+                await sync_account(pool, dict(acc))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Sync @{acc['username']}: {e}")
+
+    asyncio.create_task(run_sync())
